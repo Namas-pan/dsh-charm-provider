@@ -23,7 +23,7 @@ jobs:
       # The Harness packages this plugin compiles against are peer dependencies
       # the deployment owns; here they are installed only as build-time
       # devDependencies, which is the resolution path `--no-runtime` selects.
-      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --frozen-lockfile
 
       - run: node scripts/build.mjs --check --no-runtime
 
