@@ -1,0 +1,11 @@
+# Build artifacts that must travel with the package: `lib/` is intentionally
+# COMMITTED so `dsh plugin add github:<owner>/dsh-hyper-provider` works with no
+# build step on the installer's machine.
+node_modules/
+dist/
+coverage/
+*.tgz
+*.tsbuildinfo
+tsconfig.build.json
+dsh.runtime.json
+.DS_Store

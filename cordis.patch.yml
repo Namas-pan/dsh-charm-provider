@@ -1,0 +1,8 @@
+# dsh-charm-provider bundle layer.
+# Registers the `hyper` provider route (Charm Hyper, openai-completions).
+- insert:
+    - id: llm-hyper
+      name: "dsh-charm-provider"
+      config:
+        apiKeyEnv: HYPER_API_KEY
+        baseURL: https://hyper.charm.land/v1

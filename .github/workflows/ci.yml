@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The Harness packages this plugin compiles against are peer dependencies
+      # the deployment owns; here they are installed only as build-time
+      # devDependencies, which is the resolution path `--no-runtime` selects.
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: node scripts/build.mjs --check --no-runtime
+
+      - run: node scripts/build.mjs --no-runtime
+
+      # verify-plugin imports the built artifact and parses the LIVE public
+      # /v1/models catalog (no credential needed); verify-client drives the
+      # browser bundle under a React stub.
+      - run: node scripts/verify-plugin.mjs --no-runtime
+      - run: node scripts/verify-client.mjs
