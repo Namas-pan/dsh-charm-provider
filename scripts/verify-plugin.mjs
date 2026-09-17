@@ -88,6 +88,42 @@ check('Config defaults resolve', defaults.apiKeyEnv === 'HYPER_API_KEY' && defau
   `${defaults.apiKeyEnv} / ${defaults.baseURL}`)
 check('visibleModels defaults to all', Array.isArray(defaults.visibleModels) && defaults.visibleModels.length === 0)
 
+/* ------------------------------------------------- credits remote wiring */
+
+// Mount the plugin with a stub context and exercise the credits service the way
+// the Gateway does: through `ctx.get(serviceKey)`, a WRAPPED receiver. A method
+// reading `this` (or a `#private` field) throws there — the failure the balance
+// card hit as "Cannot read private member #read from an object whose class did
+// not declare it". This runs without a credential, so CI covers it.
+let creditsService
+const stub = {
+  settings: { register: () => ({ get: () => defaults, watch: () => () => {} }) },
+  get: () => undefined,
+  llm: { registerConfigurableProviders() {}, registerAdapter() {} },
+  reflect: { provide(name, instance) { if (name === 'hyperCredits') creditsService = instance } },
+  effect: (callback) => callback(),
+  inject(services, callback) {
+    if (!services.includes('typert')) return
+    callback({ reflect: stub.reflect, effect: () => () => {}, typert: { register: () => () => {} } })
+  },
+}
+mod.apply(stub, defaults)
+check('mounts the credits service', typeof creditsService?.credits === 'function')
+
+let throughWrapper
+try {
+  const wrapper = new Proxy(creditsService, {})
+  throughWrapper = await Reflect.apply(Reflect.get(wrapper, 'credits'), wrapper, [])
+} catch (error) {
+  throughWrapper = { failure: String(error.message ?? error) }
+}
+check('the credits method survives a wrapped receiver',
+  throughWrapper?.failure === undefined && typeof throughWrapper.requests === 'number',
+  throughWrapper?.failure ?? `balance=${throughWrapper?.balance} error=${throughWrapper?.error}`)
+check('a keyless mount reports the failure instead of throwing',
+  throughWrapper?.failure === undefined && throughWrapper?.balance === null && typeof throughWrapper?.error === 'string',
+  String(throughWrapper?.error).slice(0, 80))
+
 const response = await fetch(`${defaults.baseURL}/models`)
 const payload = await response.json()
 const models = mod.parseCatalog(payload)
