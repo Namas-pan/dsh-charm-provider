@@ -143,6 +143,22 @@ check('credits Remote registered on the host',
   contribution === undefined ? 'no contribution' : `${contribution.invocations[0].namespace}/${contribution.invocations[0].method} via ${contribution.invocations[0].service}`)
 check('credits service is provided under its invocation service key', typeof creditsService?.credits === 'function')
 
+// The Gateway dispatches as Reflect.apply(ctx.get(serviceKey)[method], receiver,
+// args), where that receiver is a traced WRAPPER rather than the instance. A
+// method reading `this` (or a `#private` field) blows up there, so exercise that
+// exact shape here: this is the regression check for the card failing with
+// "Cannot read private member #read from an object whose class did not declare it".
+let viaWrapper
+try {
+  const wrapper = new Proxy(creditsService, {})
+  viaWrapper = await Reflect.apply(Reflect.get(wrapper, 'credits'), wrapper, [])
+} catch (error) {
+  viaWrapper = { failure: String(error.message ?? error) }
+}
+check('the credits method survives a wrapped receiver',
+  viaWrapper?.failure === undefined && typeof viaWrapper.balance === 'number',
+  viaWrapper?.failure ?? `balance=${viaWrapper?.balance} source=${viaWrapper?.source}`)
+
 /* ------------------------------------------------------------- streaming */
 
 const user = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })

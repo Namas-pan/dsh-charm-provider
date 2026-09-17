@@ -107,6 +107,13 @@ for (const former of FORMER_NAMES) {
   }
 }
 
+// `dsh plugin` delegates to pnpm in the profile directory: run from there and
+// name the tarball relatively, which is what keeps the Windows path resolution
+// inside the profile.
+run('dsh', ['plugin', '--profile', PROFILE, 'add', `./${tarball}`], { cwd: profileDir })
+
+// Only now is the previous tarball unreferenced. Deleting it earlier makes pnpm
+// re-resolve a `file:` dependency whose target is already gone (ENOENT).
 for (const entry of readdirSync(profileDir)) {
   const stale = entry.endsWith('.tgz') && entry !== tarball && tarballPrefixes.some(prefix => entry.startsWith(prefix))
   if (stale) {
@@ -114,11 +121,6 @@ for (const entry of readdirSync(profileDir)) {
     console.log(`removed stale: ${entry}`)
   }
 }
-
-// `dsh plugin` delegates to pnpm in the profile directory: run from there and
-// name the tarball relatively, which is what keeps the Windows path resolution
-// inside the profile.
-run('dsh', ['plugin', '--profile', PROFILE, 'add', `./${tarball}`], { cwd: profileDir })
 
 const bundles = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf-8')).dsh?.profile?.bundles ?? []
 console.log(`\ninstalled ${manifest.name}@${manifest.version} into profile "${PROFILE}"`)

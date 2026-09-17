@@ -1,6 +1,6 @@
 {
   "name": "dsh-charm-provider",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Charm Hyper (hyper.charm.land) LLM provider plugin for DeepSeek Harness: live model catalog, image input, reasoning effort, and per-request cost readout.",
   "license": "BSD-3-Clause",
   "type": "module",

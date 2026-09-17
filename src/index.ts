@@ -157,16 +157,22 @@ interface TypertRegistryLike {
 
 /** The Host service the credits Remote invokes. */
 class HyperCreditsService extends TypertRemoteService {
-  readonly #read: () => Promise<HyperCreditsView>
+  /**
+   * Bound as an own arrow property rather than a prototype method.
+   *
+   * The Gateway dispatches a Remote as
+   * `Reflect.apply(Reflect.get(receiver, method), receiver, args)` where
+   * `receiver` is `ctx.get(serviceKey)` — a traced wrapper, not this instance.
+   * A prototype method reading `this` therefore sees the wrapper: a `#private`
+   * field fails its brand check ("Cannot read private member #read from an
+   * object whose class did not declare it") and a plain field would be missing.
+   * Closing over the reader instead makes the call receiver-independent.
+   */
+  declare credits: () => Promise<HyperCreditsView>
 
   constructor(ctx: Context, read: () => Promise<HyperCreditsView>) {
     super(ctx, REMOTE_SERVICE, { namespace: REMOTE_NAMESPACE })
-    this.#read = read
-  }
-
-  /** Current credit state; refreshes from the endpoint when it is stale. */
-  async credits(): Promise<HyperCreditsView> {
-    return this.#read()
+    this.credits = () => read()
   }
 }
 
