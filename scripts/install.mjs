@@ -96,7 +96,7 @@ copyFileSync(packed, staged)
  * mount TWO rows carrying the same `llm-hyper` id and register the `hyper`
  * route twice, which fails the boot — so a former install is removed first.
  */
-const FORMER_NAMES = ['@dsh-external/dsh-charm-provider']
+const FORMER_NAMES = ['@dsh-external/dsh-charm-provider', 'dsh-hyper-provider']
 const tarballPrefixes = [manifest.name, ...FORMER_NAMES].map(name => `${name.replace('@', '').replace('/', '-')}-`)
 
 const profileManifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf-8'))

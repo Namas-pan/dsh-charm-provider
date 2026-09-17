@@ -10,6 +10,35 @@ export declare const PROVIDER = "hyper";
 export declare const PROVIDER_DISPLAY_NAME = "Hyper";
 /** Settings namespace holding this route's connection facts. */
 export declare const NS = "llm-hyper";
+/** Everything the browser card renders. Every field is always present. */
+export interface HyperCreditsView {
+    /**
+     * Hypercredits left. A streamed response carries `cost` but NOT `remaining`
+     * (only a non-streamed one carries both), so once the reading goes stale this
+     * is the last reading minus the spend recorded since — see {@link estimated}.
+     */
+    balance: number | null;
+    /** Which source produced the raw reading behind `balance`. */
+    source: 'endpoint' | 'response' | 'none';
+    /** True when `balance` subtracts spend accumulated after that reading. */
+    estimated: boolean;
+    /** Epoch milliseconds of that reading. */
+    updatedAt: number | null;
+    /** Requests this plugin streamed since it mounted. */
+    requests: number;
+    /** Accumulated cost of those requests, in USD. */
+    spentUsd: number;
+    /** Accumulated cost of those requests, in Hypercredits. */
+    spentCredits: number;
+    /** Cost of the most recent request, in USD. */
+    lastCostUsd: number | null;
+    /** Model id of the most recent request. */
+    lastModel: string | null;
+    /** Why the endpoint refresh failed, when it did. */
+    error: string | null;
+}
+/** Strict boundary validator for the credits Remote result. */
+export declare function parseCreditsView(value: unknown): HyperCreditsView;
 export interface Config {
     /** Credential reference (environment-variable name) resolved per request. */
     apiKeyEnv: string;

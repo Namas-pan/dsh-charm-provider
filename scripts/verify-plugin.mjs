@@ -35,6 +35,7 @@ const PEERS = [
   '@deepseek-ai/dsh-credentials',
   '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-settings',
+  '@deepseek-ai/dsh-typert-protocol',
 ]
 
 const results = []

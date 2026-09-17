@@ -12,8 +12,17 @@ DeepSeek Harness 的 **Charm Hyper**（[hyper.charm.land](https://hyper.charm.la
   attachment 服务。
 - **推理强度** —— 请求带 `reasoning_effort`，assistant 历史回放 `reasoning_content`，
   只回放有配对结果的 tool call。
-- **花费与余额** —— Hyper 在 `usage` 里回传 `cost.usd` 与 `remaining.hypercredits`，
-  执行 `/hyper` 可看最近一次请求的用量、花费与余额（`/hyper models` 列全部模型）。
+- **余额统计（Hypercredits）** —— `Settings → Hyper` 顶部是余额卡片，`Settings → Models`
+  的 Hyper 卡片上也有一行余额；`/hyper` 给文字版汇总（余额、本次会话请求数/累计花费/
+  累计积分、最近一次请求）。数据有**两个来源**，卡片会标明用的是哪个：
+
+  - `GET /v1/credits` → 整数余额，权威；
+  - 每个响应的 `usage.remaining.hypercredits` → 精确到小数。
+
+  > 实测（`scripts/verify-live.mjs` 对账出来的，文档没写）：**流式**响应的 usage 只带
+  > `cost.usd` / `cost.hypercredits`，**不带 `remaining`**——只有非流式响应两者都有。
+  > 而 dsh 永远是流式，所以余额平时来自端点读数，再减去其后累计的花费，卡片显示为
+  > 「来自 /v1/credits，已扣除其后的花费」（协议里的 `estimated` 标记）。
 - **错误语义** —— 401 → `INVALID_CREDENTIAL`、402 → `QUOTA`、429 → `RATE_LIMIT`
   （带 `retry-after`）、5xx → `PROVIDER_HTTP_ERROR`；每个请求都带
   `attributionHeaders()`。
@@ -62,7 +71,7 @@ composition 行由本包的 bundle patch 提供（`cordis.patch.yml`）：
 ```yaml
 - insert:
     - id: llm-hyper
-      name: "dsh-hyper-provider"
+      name: "dsh-charm-provider"
       config:
         apiKeyEnv: HYPER_API_KEY
         baseURL: https://hyper.charm.land/v1
@@ -99,7 +108,8 @@ llm-hyper:
 | settings 命名空间 | `llm-hyper` |
 | 协议 | `openai-completions`（`POST {baseURL}/chat/completions`） |
 | 目录 | `GET {baseURL}/models`（免鉴权） |
-| 余额 | `GET {baseURL}/credits`（需要 key，尚未接到 UI） |
+| 余额 | `GET {baseURL}/credits` → `{"balance": 94}`（需要 key） |
+| 余额 Remote | 命名空间 `hyper` · 方法 `credits` · Host 服务 `hyperCredits` |
 
 ## 开发
 
@@ -127,7 +137,7 @@ pnpm run verify:live  # 真机端到端（需要密钥，见下）
 | --- | --- | --- |
 | `scripts/verify-plugin.mjs` | 产物能在真实运行时 import；导出契约；**线上** `/v1/models` 解析 | 否 |
 | `scripts/verify-client.mjs` | 浏览器半自注册、两个座位、凭据 Remote 信封、组件渲染 | 否 |
-| `scripts/verify-live.mjs` | 真机：目录 / resolveModel / 纯文本流 / `reasoning_effort` / 工具调用 / 带图 | 是 |
+| `scripts/verify-live.mjs` | 真机：目录 / resolveModel / 纯文本流 / `reasoning_effort` / 工具调用 / 带图 / **余额端点与派生余额** | 是 |
 
 `verify-live` 的密钥取自 `HYPER_API_KEY` 或 `$DSH_HOME/.credentials.yaml`，
 **不会打印**。

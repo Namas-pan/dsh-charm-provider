@@ -34,6 +34,7 @@ const RESOLUTIONS = {
   '@deepseek-ai/dsh-credentials': '@deepseek-ai/dsh-credentials',
   '@deepseek-ai/dsh-llm': '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-settings': '@deepseek-ai/dsh-settings',
+  '@deepseek-ai/dsh-typert-protocol': '@deepseek-ai/dsh-typert-protocol',
 }
 
 /**

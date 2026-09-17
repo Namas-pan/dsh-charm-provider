@@ -37,6 +37,7 @@ const PEERS = [
   '@deepseek-ai/dsh-credentials',
   '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-settings',
+  '@deepseek-ai/dsh-typert-protocol',
 ]
 const CREDENTIAL_REF = 'HYPER_API_KEY'
 
@@ -118,11 +119,29 @@ const ctx = {
     registerConfigurableProviders(entries) { captured = { ...captured, providers: entries } },
     registerAdapter(providers, adapter) { captured = { ...captured, providers, adapter } },
   },
+  // The real Service base registers itself through `ctx.reflect.provide`; the
+  // Remote's scope supplies the registry that receives the invocation.
+  reflect: { provide(name, instance) { captured = { ...captured, services: { ...captured?.services, [name]: instance } } } },
+  effect(callback) { return callback() },
+  inject(services, callback) {
+    if (!services.includes('typert')) return
+    callback({
+      reflect: ctx.reflect,
+      effect: () => () => {},
+      typert: { register(contribution) { captured = { ...captured, contribution }; return () => {} } },
+    })
+  },
 }
 
 mod.apply(ctx, CONFIG)
 const adapter = captured?.adapter
+const creditsService = captured?.services?.hyperCredits
+const contribution = captured?.contribution
 check('adapter registered for the hyper route', adapter !== undefined && captured.providers.includes('hyper'))
+check('credits Remote registered on the host',
+  contribution?.package === 'dsh-charm-provider' && contribution?.invocations?.[0]?.namespace === 'hyper' && contribution?.invocations?.[0]?.method === 'credits',
+  contribution === undefined ? 'no contribution' : `${contribution.invocations[0].namespace}/${contribution.invocations[0].method} via ${contribution.invocations[0].service}`)
+check('credits service is provided under its invocation service key', typeof creditsService?.credits === 'function')
 
 /* ------------------------------------------------------------- streaming */
 
@@ -150,14 +169,40 @@ async function drain(options) {
 }
 
 const models = await adapter.listModels('hyper')
-check('live catalog lists models', models.length > 30, `${models.length} models`)
+// The vendor's catalog moves (34 models one day, 23 the next), so this asserts a
+// usable catalog rather than a frozen count.
+check('live catalog lists models', models.length > 5, `${models.length} models`)
 const resolved = await adapter.resolveModel('hyper', MODEL)
 check('resolveModel reports image + reasoning', resolved.inputModalities.includes('image') && (resolved.reasoning?.efforts.length ?? 0) > 0,
   `input=${resolved.inputModalities.join('+')} efforts=${(resolved.reasoning?.efforts ?? []).map(e => e.id).join(',')}`)
 
+const creditsAtStart = await creditsService.credits()
+check('credits endpoint answers through the service',
+  typeof creditsAtStart.balance === 'number' && creditsAtStart.source === 'endpoint' && creditsAtStart.error === null,
+  `balance=${creditsAtStart.balance} source=${creditsAtStart.source}${creditsAtStart.error === null ? '' : ` error=${creditsAtStart.error}`}`)
+
 const plain = await drain({ messages: [user('Reply with exactly: pong')], maxTokens: 32 })
 check('plain stream completes', plain.failure === undefined && plain.finish?.kind === 'stop', plain.failure === undefined ? `finish=${plain.finish?.kind} text=${JSON.stringify(plain.text.slice(0, 40))}` : String(plain.failure.message))
 check('plain stream reports usage', (plain.usage?.inputTokens ?? 0) > 0 && (plain.usage?.outputTokens ?? 0) > 0, JSON.stringify(plain.usage))
+
+const creditsAfter = await creditsService.credits()
+// A streamed response reports `cost` but not `remaining`, so the card derives
+// the live balance from the last endpoint reading minus the spend since.
+check('a stream updates the spend and derives the balance',
+  creditsAfter.requests >= 1 && creditsAfter.spentUsd > 0 && creditsAfter.spentCredits > 0 && typeof creditsAfter.balance === 'number',
+  `requests=${creditsAfter.requests} spent=$${creditsAfter.spentUsd.toFixed(6)} credits=${creditsAfter.spentCredits.toFixed(4)} balance=${creditsAfter.balance} source=${creditsAfter.source} estimated=${creditsAfter.estimated}`)
+check('the derived balance matches reading minus spend',
+  creditsAfter.balance !== null && creditsAtStart.balance !== null
+    && (creditsAfter.source === 'response' || Math.abs(creditsAfter.balance - (creditsAtStart.balance - creditsAfter.spentCredits)) < 1e-6),
+  `endpoint=${creditsAtStart.balance} spent=${creditsAfter.spentCredits.toFixed(4)} shown=${creditsAfter.balance}`)
+
+let hostRejectedBadFrame = false
+try {
+  contribution.invocations[0].result.schema.parse({ balance: 'nope' })
+} catch {
+  hostRejectedBadFrame = true
+}
+check('host descriptor validator rejects a malformed frame', hostRejectedBadFrame)
 
 const reasoning = await drain({ messages: [user('What is 17*23? Think it through.')], reasoningEffort: 'max', maxTokens: 256 })
 check('reasoning effort accepted', reasoning.failure === undefined && reasoning.finish?.kind === 'stop', `finish=${reasoning.finish?.kind} reasoning chars=${reasoning.reasoning.length}`)

@@ -132,10 +132,30 @@ const scope = {
 }
 
 const injectRequests = []
+const mounts = []
+const creditsResult = {
+  balance: 114.831587394,
+  source: 'response',
+  updatedAt: 1760000000000,
+  requests: 3,
+  spentUsd: 0.0003,
+  spentCredits: 0.006,
+  lastCostUsd: 0.0001,
+  lastModel: 'deepseek-v4.1-flash',
+  error: null,
+}
+const effects = []
 const ctx = {
   slots,
   settingsScope: { bind: (spec) => { ctx.boundNamespace = spec.namespace; return scope } },
-  inject(services, callback) { injectRequests.push(services); callback({ remote: { credentials } }) },
+  inject(services, callback) {
+    injectRequests.push(services)
+    callback({ remote: { credentials, hyper: { credits: async () => ({ ok: true, value: creditsResult }) } } })
+  },
+  effect(callback, label) { effects.push({ label, dispose: callback() }); return () => {} },
+  remote: {
+    $mount(contribution) { mounts.push(contribution); return Promise.resolve(() => {}) },
+  },
 }
 
 let exported
@@ -151,7 +171,16 @@ try {
 }
 
 check('waits for remote.credentials', injectRequests.some(services => services.includes('remote.credentials')))
+check('waits for the credits Remote', injectRequests.some(services => services.includes('remote.hyper')))
 check('binds settings namespace llm-hyper', ctx.boundNamespace === 'llm-hyper', String(ctx.boundNamespace))
+
+const mounted = mounts[0]
+const descriptor = mounted?.descriptors?.[0]
+check('mounts the credits Remote',
+  mounted?.package === 'dsh-charm-provider' && descriptor?.namespace === 'hyper' && descriptor?.method === 'credits',
+  `${mounted?.package} ${descriptor?.namespace}/${descriptor?.method}`)
+check('descriptor names the Host service and a strict result',
+  descriptor?.service === 'hyperCredits' && descriptor?.result?.mode === 'strict' && typeof descriptor?.result?.schema?.parse === 'function')
 
 const section = registrations.find(entry => entry.options.name === 'settings.section')
 const card = registrations.find(entry => entry.options.name === 'settings.models.provider-card')
@@ -168,12 +197,25 @@ check('credential Remote envelope mapped',
 const written = await faces.credentials.set('HYPER_API_KEY', 'sk-hyper-test')
 check('credential write is positional', written.ok === true && calls.set[0][0] === 'HYPER_API_KEY' && calls.set[0][1] === 'sk-hyper-test')
 
+const credits = await faces.credits.read()
+check('credits Remote result parses',
+  credits.ok === true && credits.view.balance === creditsResult.balance && credits.view.requests === 3,
+  `balance=${credits.view?.balance} requests=${credits.view?.requests}`)
+let rejectedBadShape = false
+try {
+  descriptor.result.schema.parse({ balance: 'not-a-number' })
+} catch {
+  rejectedBadShape = true
+}
+check('credits validator rejects a malformed frame', rejectedBadShape)
+
 for (const [label, component] of [['settings page', section.component], ['provider card', card.component]]) {
   try {
     const tree = render(component, { faces, keyConfigured: true, provider: { active: true }, configured: true })
     const text = stringsOf(tree).join(' | ')
     const ok = text.includes('Hyper') && text.includes('sk-hyper-') && text.includes('HYPER_API_KEY')
     check(`${label} renders with the expected content`, ok, text.slice(0, 120))
+    check(`${label} carries the credits card`, text.includes('Hypercredits'), '')
   } catch (error) {
     check(`${label} renders with the expected content`, false, String(error.message ?? error))
   }

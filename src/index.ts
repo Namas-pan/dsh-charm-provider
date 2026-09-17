@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   LlmAdapter,
   LlmError,
@@ -50,6 +51,124 @@ const DEFAULT_CACHE_FILE = join(homedir(), '.hyper', 'models-cache.json')
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 const DEFAULT_CATALOG_TTL_MS = 6 * 60 * 60 * 1000
+
+/* -------------------------------------------------------------------------- */
+/* Credits Remote                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Hyper bills in Hypercredits. Two independent sources agree on the number and
+ * disagree on precision: `GET /v1/credits` answers the account balance rounded
+ * to whole credits, while every chat response carries the exact post-request
+ * value as `usage.remaining.hypercredits` (plus `usage.cost.usd` and
+ * `usage.cost.hypercredits` for that request). The card therefore prefers the
+ * response value and falls back to the endpoint.
+ */
+const REMOTE_PACKAGE = 'dsh-charm-provider'
+const REMOTE_SERVICE = 'hyperCredits'
+const REMOTE_NAMESPACE = 'hyper'
+const CREDITS_TYPE = `${REMOTE_PACKAGE}#HyperCredits`
+/** Endpoint balance is an account-wide fact; re-asking inside this window is waste. */
+const BALANCE_MIN_INTERVAL_MS = 10_000
+
+/** Everything the browser card renders. Every field is always present. */
+export interface HyperCreditsView {
+  /**
+   * Hypercredits left. A streamed response carries `cost` but NOT `remaining`
+   * (only a non-streamed one carries both), so once the reading goes stale this
+   * is the last reading minus the spend recorded since — see {@link estimated}.
+   */
+  balance: number | null
+  /** Which source produced the raw reading behind `balance`. */
+  source: 'endpoint' | 'response' | 'none'
+  /** True when `balance` subtracts spend accumulated after that reading. */
+  estimated: boolean
+  /** Epoch milliseconds of that reading. */
+  updatedAt: number | null
+  /** Requests this plugin streamed since it mounted. */
+  requests: number
+  /** Accumulated cost of those requests, in USD. */
+  spentUsd: number
+  /** Accumulated cost of those requests, in Hypercredits. */
+  spentCredits: number
+  /** Cost of the most recent request, in USD. */
+  lastCostUsd: number | null
+  /** Model id of the most recent request. */
+  lastModel: string | null
+  /** Why the endpoint refresh failed, when it did. */
+  error: string | null
+}
+
+/** Strict boundary validator for the credits Remote result. */
+export function parseCreditsView(value: unknown): HyperCreditsView {
+  if (!isRecord(value)) throw new Error('credits: expected an object')
+  const number = (key: keyof HyperCreditsView, nullable: boolean): number | null => {
+    const raw = value[key]
+    if (raw === null && nullable) return null
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) throw new Error(`credits.${String(key)}: expected a finite number`)
+    return raw
+  }
+  const source = value.source
+  if (source !== 'endpoint' && source !== 'response' && source !== 'none') throw new Error('credits.source: unexpected value')
+  if (typeof value.estimated !== 'boolean') throw new Error('credits.estimated: expected a boolean')
+  const lastModel = value.lastModel
+  if (lastModel !== null && typeof lastModel !== 'string') throw new Error('credits.lastModel: expected a string or null')
+  const error = value.error
+  if (error !== null && typeof error !== 'string') throw new Error('credits.error: expected a string or null')
+  return {
+    balance: number('balance', true),
+    source,
+    estimated: value.estimated,
+    updatedAt: number('updatedAt', true),
+    requests: number('requests', false) ?? 0,
+    spentUsd: number('spentUsd', false) ?? 0,
+    spentCredits: number('spentCredits', false) ?? 0,
+    lastCostUsd: number('lastCostUsd', true),
+    lastModel,
+    error,
+  }
+}
+
+/**
+ * The invocation both halves declare. The Host registers it through
+ * `ctx.typert.register`; the browser half mounts the same descriptor through
+ * `ctx.remote.$mount`, which is what makes `remote.hyper.credits()` callable.
+ */
+const CREDITS_DESCRIPTOR = {
+  id: `${REMOTE_PACKAGE}#${REMOTE_NAMESPACE}/credits`,
+  service: REMOTE_SERVICE,
+  namespace: REMOTE_NAMESPACE,
+  method: 'credits',
+  invocation: { kind: 'direct' as const },
+  parameters: [],
+  result: { mode: 'strict' as const, typeSymbol: CREDITS_TYPE, schema: { parse: parseCreditsView } },
+}
+
+/** Minimal shape of the registry this plugin uses. */
+interface TypertRegistryLike {
+  register: (contribution: {
+    package: string
+    face: 'host'
+    schemas: readonly unknown[]
+    model: { services: readonly unknown[]; events: readonly unknown[]; objects: readonly unknown[] }
+    invocations: readonly unknown[]
+  }) => () => void
+}
+
+/** The Host service the credits Remote invokes. */
+class HyperCreditsService extends TypertRemoteService {
+  readonly #read: () => Promise<HyperCreditsView>
+
+  constructor(ctx: Context, read: () => Promise<HyperCreditsView>) {
+    super(ctx, REMOTE_SERVICE, { namespace: REMOTE_NAMESPACE })
+    this.#read = read
+  }
+
+  /** Current credit state; refreshes from the endpoint when it is stale. */
+  async credits(): Promise<HyperCreditsView> {
+    return this.#read()
+  }
+}
 
 export interface Config {
   /** Credential reference (environment-variable name) resolved per request. */
@@ -381,6 +500,22 @@ interface StreamStats {
   remainingCredits?: number
 }
 
+/** Mutable credit accounting behind the Remote and the `/hyper` command. */
+interface CreditsState {
+  /** Last raw reading, exactly as a source reported it. */
+  balance?: number
+  source: 'endpoint' | 'response' | 'none'
+  /** Hypercredits spent since that reading (a stream reports cost, not balance). */
+  spentSinceReading: number
+  updatedAt?: number
+  requests: number
+  spentUsd: number
+  spentCredits: number
+  lastCostUsd?: number
+  lastModel?: string
+  error?: string
+}
+
 export function apply(ctx: Context, config: Config): void {
   const scope: SettingsScope<Config> = ctx.settings.register(NS, Config, { base: config, applies: 'live' })
   const current = (): Config => scope.get()
@@ -393,6 +528,9 @@ export function apply(ctx: Context, config: Config): void {
   let snapshot: CatalogSnapshot | undefined
   let refresh: Promise<void> | undefined
   let lastStats: StreamStats | undefined
+  let credits: CreditsState = { source: 'none', spentSinceReading: 0, requests: 0, spentUsd: 0, spentCredits: 0 }
+  let balanceAskedAt = 0
+  let balanceAsk: Promise<void> | undefined
 
   const models = (): CatalogModel[] => snapshot?.models ?? []
 
@@ -451,6 +589,57 @@ export function apply(ctx: Context, config: Config): void {
       )
     }
     return assertUsableApiKey(hit.value, 'hyper', ref)
+  }
+
+  /**
+   * Ask the endpoint for the account balance, at most once per interval and
+   * never twice concurrently. A failure is recorded on the state (so the card
+   * can show it) instead of thrown — the last known balance stays useful.
+   */
+  const askBalance = async (): Promise<void> => {
+    if (balanceAsk !== undefined) return balanceAsk
+    if (Date.now() - balanceAskedAt < BALANCE_MIN_INTERVAL_MS) return
+    balanceAsk = (async () => {
+      try {
+        const apiKey = await resolveApiKey()
+        const response = await fetch(`${current().baseURL}/credits`, {
+          method: 'GET',
+          headers: { accept: 'application/json', authorization: `Bearer ${apiKey}`, ...attributionHeaders() },
+          signal: AbortSignal.timeout(current().requestTimeoutMs),
+        })
+        if (!response.ok) throw httpFailure(response.status, await response.text().catch(() => ''), retryAfterMs(response))
+        const payload: unknown = await response.json()
+        const balance = isRecord(payload) ? num(payload.balance) : undefined
+        if (balance === undefined) throw new LlmError('Hyper /credits answered without a balance', 'PROVIDER_PROTOCOL_ERROR')
+        credits = { ...credits, balance, source: 'endpoint', updatedAt: Date.now(), spentSinceReading: 0, error: undefined }
+      } catch (error) {
+        credits = { ...credits, error: error instanceof Error ? error.message : String(error) }
+      } finally {
+        balanceAskedAt = Date.now()
+        balanceAsk = undefined
+      }
+    })()
+    return balanceAsk
+  }
+
+  /** The Remote's read: current state, with a stale endpoint balance refreshed. */
+  const readCredits = async (): Promise<HyperCreditsView> => {
+    await askBalance()
+    const reading = credits.balance
+    const spentSince = credits.spentSinceReading
+    const estimated = reading !== undefined && spentSince > 0
+    return {
+      balance: reading === undefined ? null : Math.max(0, Math.round((reading - spentSince) * 1e4) / 1e4),
+      source: credits.source,
+      estimated,
+      updatedAt: credits.updatedAt ?? null,
+      requests: credits.requests,
+      spentUsd: credits.spentUsd,
+      spentCredits: credits.spentCredits,
+      lastCostUsd: credits.lastCostUsd ?? null,
+      lastModel: credits.lastModel ?? null,
+      error: credits.error ?? null,
+    }
   }
 
   const resolveModel = async (provider: string, model: string): Promise<LlmResolvedModelInfo> => {
@@ -674,12 +863,28 @@ export function apply(ctx: Context, config: Config): void {
           },
         }
         const cost = isRecord(usage.cost) ? num(usage.cost.usd) : undefined
+        const costCredits = isRecord(usage.cost) ? num(usage.cost.hypercredits) : undefined
         const remaining = isRecord(usage.remaining) ? num(usage.remaining.hypercredits) : undefined
         lastStats = {
           inputTokens: promptTokens,
           outputTokens: completionTokens,
           ...(cost !== undefined ? { costUsd: cost } : {}),
           ...(remaining !== undefined ? { remainingCredits: remaining } : {}),
+        }
+        // The response's post-request balance is exact when present (non-streamed
+// responses carry it; streamed ones carry only `cost`), so it wins outright and
+// resets the derived-spend counter. Otherwise the spend accumulates against the
+// last endpoint reading.
+        credits = {
+          ...credits,
+          requests: credits.requests + 1,
+          spentUsd: credits.spentUsd + (cost ?? 0),
+          spentCredits: credits.spentCredits + (costCredits ?? 0),
+          ...(cost !== undefined ? { lastCostUsd: cost } : {}),
+          lastModel: options.model,
+          ...(remaining !== undefined
+            ? { balance: remaining, source: 'response' as const, updatedAt: Date.now(), spentSinceReading: 0, error: undefined }
+            : { spentSinceReading: credits.spentSinceReading + (costCredits ?? 0) }),
         }
       }
       return chunks
@@ -768,6 +973,26 @@ export function apply(ctx: Context, config: Config): void {
   ])
   ctx.llm.registerAdapter([PROVIDER], adapter)
 
+  // The browser card reads the balance through this Remote: the Host registers
+  // the invocation and the service that answers it, and the client half mounts
+  // the same descriptor to make `remote.hyper.credits()` callable.
+  const typert = (ctx as unknown as { inject?: (keys: string[], callback: (scope: Context) => void) => void })
+  if (typeof typert.inject === 'function') {
+    typert.inject(['typert'], (remoteCtx) => {
+      const registry = (remoteCtx as unknown as { typert?: TypertRegistryLike }).typert
+      if (registry === undefined) return
+      new HyperCreditsService(remoteCtx, readCredits)
+      const release = registry.register({
+        package: REMOTE_PACKAGE,
+        face: 'host',
+        schemas: [],
+        model: { services: [], events: [], objects: [] },
+        invocations: [CREDITS_DESCRIPTOR],
+      })
+      remoteCtx.effect(() => () => release(), 'dsh-charm-provider: credits remote')
+    })
+  }
+
   // Warm the catalog once at mount so the first picker render is populated.
   void ensureCatalog().catch(() => undefined)
 
@@ -790,15 +1015,19 @@ export function apply(ctx: Context, config: Config): void {
       input: { hint: '[models]' },
       handler: async (invocation) => {
         await ensureCatalog().catch(() => undefined)
+        const view = await readCredits()
         const cfg = current()
         const header = [
           `provider: ${PROVIDER} (${PROVIDER_DISPLAY_NAME})`,
           `baseURL: ${cfg.baseURL}`,
           `key ref: ${cfg.apiKeyEnv}`,
           `models: ${models().length}${cfg.visibleModels.length > 0 ? ` (${visible().length} visible)` : ''}`,
+          `hypercredits: ${view.balance === null ? 'unknown' : view.balance}${view.estimated ? ' (est.)' : ''} (${view.source}${view.updatedAt === null ? '' : `, ${new Date(view.updatedAt).toLocaleTimeString()}`})`,
+          `this session: ${view.requests} requests · $${view.spentUsd.toFixed(6)} · ${view.spentCredits.toFixed(4)} credits`,
           ...(lastStats !== undefined
-            ? [`last request: in ${lastStats.inputTokens} / out ${lastStats.outputTokens}${lastStats.costUsd !== undefined ? ` · $${lastStats.costUsd.toFixed(6)}` : ''}${lastStats.remainingCredits !== undefined ? ` · ${lastStats.remainingCredits} hypercredits left` : ''}`]
+            ? [`last request: in ${lastStats.inputTokens} / out ${lastStats.outputTokens}${lastStats.costUsd !== undefined ? ` · $${lastStats.costUsd.toFixed(6)}` : ''}`]
             : []),
+          ...(view.error !== null ? [`last balance refresh failed: ${view.error}`] : []),
         ].join('\n')
         if ((invocation?.rawInput ?? '').trim() !== 'models') return { kind: 'success', text: header }
         const lines = visible().map(model => `• ${model.id} — ${model.name} — ${describe(model)}`)
