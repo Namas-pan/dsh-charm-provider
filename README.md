@@ -99,6 +99,21 @@ llm-hyper:
 
 设置页里的 **API Base URL** 直接走 `settingsScope`，改完下一个请求生效。
 
+### 密钥不会进仓库
+
+仓库里只有**引用名**（`HYPER_API_KEY`）和占位符（`sk-hyper-...`），真实密钥存在
+`$DSH_HOME/.credentials.yaml`——在仓库之外。这一点由 `scripts/check-secrets.mjs` 保证，
+它已接进 CI 与 `prepublishOnly`：
+
+- **精确比对**：本地跑时把**真实密钥**（环境变量或凭据存储）与仓库下每个文件逐字节比对，
+  密钥本身从不打印；
+- **形状扫描**：`sk-hyper-…`、其他家的 `sk-…`、PEM 私钥；真实值（前缀后 20+ 位字母数字）
+  直接让构建失败，`sk-hyper-...` / `sk-hyper-test` 这类占位符只列出、不拦；
+- 扫描覆盖**未跟踪**文件，所以 `git add` 之前掉进目录的临时文件也会被拦。
+
+CI 里没有密钥，因此只跑形状扫描；本地 `pnpm run check` 两者都跑。历史另算：
+`git log --all -S "sk-hyper-"` 会命中占位符（正常），要找真实泄漏得用上面的精确比对。
+
 ## 路由与命名空间
 
 | 项 | 值 |

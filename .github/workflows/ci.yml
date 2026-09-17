@@ -25,6 +25,11 @@ jobs:
       # devDependencies, which is the resolution path `--no-runtime` selects.
       - run: pnpm install --frozen-lockfile
 
+      # Fails if a credential-shaped string ever reaches the tree. There is no
+      # key in CI, so this is the shape check alone; locally the same script also
+      # compares the live key against every file.
+      - run: node scripts/check-secrets.mjs
+
       - run: node scripts/build.mjs --check --no-runtime
 
       - run: node scripts/build.mjs --no-runtime

@@ -102,8 +102,9 @@
     "typecheck": "node scripts/build.mjs --check",
     "verify": "node scripts/verify-plugin.mjs && node scripts/verify-client.mjs",
     "verify:live": "node scripts/verify-live.mjs",
-    "check": "node scripts/build.mjs --check && node scripts/verify-plugin.mjs && node scripts/verify-client.mjs",
-    "prepublishOnly": "node scripts/build.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check": "node scripts/check-secrets.mjs && node scripts/build.mjs --check && node scripts/verify-plugin.mjs && node scripts/verify-client.mjs",
+    "prepublishOnly": "node scripts/build.mjs && node scripts/check-secrets.mjs",
     "install:profile": "node scripts/install.mjs"
   }
 }
