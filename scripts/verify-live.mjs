@@ -112,7 +112,7 @@ const ctx = {
   settings: { register: () => scope },
   get(name) {
     if (name === 'credentials') return { resolve: async () => ({ value: key.value }) }
-    if (name === 'attachments') return { readImage: async () => ({ data: png, mediaType: 'image/png' }) }
+    if (name === 'attachments') return { readImage: async (ref) => ({ ref, data: png }) }
     return undefined
   },
   llm: {
@@ -247,6 +247,31 @@ check('image input accepted by a vision model', imageAccepted,
   image.failure === undefined ? `finish=${image.finish?.kind} in=${image.usage?.inputTokens}` : String(image.failure.message))
 check('image raises the prompt token count', (image.usage?.inputTokens ?? 0) > (plain.usage?.inputTokens ?? 0),
   `text-only=${plain.usage?.inputTokens} with-image=${image.usage?.inputTokens}`)
+
+// A tool result's image travels as a user message AFTER the tool message, so the
+// shape has to survive a real provider round trip — not just our wire builder.
+const toolImage = await drain({
+  messages: [
+    { role: 'assistant', content: [{ type: 'tool-call', id: 'call_shot', name: 'view_image', arguments: '{}' }] },
+    {
+      role: 'user',
+      source: { kind: 'tool' },
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'call_shot',
+        content: [
+          { type: 'text', text: 'captured the window' },
+          { type: 'image', attachment: { attachmentId: 'verify', mediaType: 'image/png', bytes: png.length, width: 64, height: 64 } },
+        ],
+      }],
+    },
+    { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Reply with exactly: seen' }] },
+  ],
+  maxTokens: 256,
+})
+check('a tool-result image survives a live round trip',
+  toolImage.failure === undefined && (toolImage.usage?.inputTokens ?? 0) > (plain.usage?.inputTokens ?? 0),
+  toolImage.failure === undefined ? `finish=${toolImage.finish?.kind} in=${toolImage.usage?.inputTokens}` : String(toolImage.failure.message))
 
 /* ------------------------------------------------------------------ png */
 

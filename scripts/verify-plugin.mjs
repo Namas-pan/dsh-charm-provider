@@ -140,6 +140,116 @@ check('display names preferred over ids', names.includes('DeepSeek V4.1 Flash'))
 check('pricing captured when published', models.filter(model => model.pricing?.input !== undefined).length > 0,
   `${models.filter(model => model.pricing?.input !== undefined).length} priced`)
 
+/* ------------------------------------------------------- image wire, offline */
+
+// The image path is where a stub once hid a real defect: `AttachmentStore.readImage`
+// answers `{ ref, data }`, so a media type read off the payload becomes `undefined`,
+// the part travels as `data:undefined;base64,…`, and the provider drops it without
+// raising — the model then answers "I see no image". Drive one stream against a
+// stubbed `fetch` and assert the request body carries a well-formed data URL.
+const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const visionModel = models.find(model => model.vision === true)
+let streamAdapter
+const streamStub = {
+  settings: { register: () => ({ get: () => streamConfig, watch: () => () => {} }) },
+  get(name) {
+    if (name === 'credentials') return { resolve: async () => ({ value: 'sk-hyper-verify' }) }
+    // The REAL store shape: the verified media type rides on the reference.
+    if (name === 'attachments') return { readImage: async (ref) => ({ ref, data: pngBytes }) }
+    return undefined
+  },
+  llm: { registerConfigurableProviders() {}, registerAdapter(_providers, adapter) { streamAdapter = adapter } },
+  reflect: { provide() {} },
+  effect: (callback) => callback(),
+  inject() {},
+}
+const streamConfig = { ...defaults, modelsCachePath: join(sandbox, 'models-cache.json') }
+mod.apply(streamStub, streamConfig)
+
+const realFetch = globalThis.fetch
+let capturedBody
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith('/models')) {
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  capturedBody = JSON.parse(String(init?.body ?? '{}'))
+  return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+const driveStream = async (messages) => {
+  capturedBody = undefined
+  try {
+    for await (const _chunk of streamAdapter.stream({
+      provider: 'hyper',
+      model: visionModel?.id ?? 'deepseek-v4.1-flash',
+      messages,
+      maxTokens: 16,
+    })) {
+      // The verdict is the captured request body, not the reply.
+    }
+  } catch {
+    // A stubbed stream may end early; the body was already captured.
+  }
+  return capturedBody
+}
+const imageBlock = {
+  type: 'image',
+  attachment: { attachmentId: 'sha256:verify', mediaType: 'image/png', bytes: pngBytes.length, width: 1, height: 1 },
+}
+const imageUrlIn = (body, role) => {
+  for (const message of body?.messages ?? []) {
+    if (role !== undefined && message.role !== role) continue
+    for (const part of Array.isArray(message.content) ? message.content : []) {
+      if (part.type === 'image_url') return part.image_url?.url ?? ''
+    }
+  }
+  return ''
+}
+const dataUrlIsPng = (url) =>
+  url.startsWith('data:image/png;base64,') && Buffer.from(url.split(',')[1] ?? '', 'base64').equals(Buffer.from(pngBytes))
+
+let userImageBody
+let toolImageBody
+try {
+  userImageBody = await driveStream([{
+    role: 'user',
+    source: { kind: 'user' },
+    content: [{ type: 'text', text: 'what is in this image?' }, imageBlock],
+  }])
+  // A tool result that carries an image: the tool message must stay string-only
+  // and the image must follow the whole run of tool messages.
+  toolImageBody = await driveStream([
+    { role: 'assistant', content: [{ type: 'tool-call', id: 'call_shot', name: 'screenshot', arguments: '{}' }] },
+    {
+      role: 'user',
+      source: { kind: 'tool' },
+      content: [{ type: 'tool-result', toolCallId: 'call_shot', content: [{ type: 'text', text: 'captured the window' }, imageBlock] }],
+    },
+  ])
+} finally {
+  globalThis.fetch = realFetch
+}
+
+const userImageUrl = imageUrlIn(userImageBody)
+check('a user image travels as a data URL with the attachment media type',
+  dataUrlIsPng(userImageUrl),
+  userImageUrl === '' ? 'no image_url part in the request body' : userImageUrl.slice(0, 44))
+
+const toolWire = toolImageBody?.messages ?? []
+const toolMessage = toolWire.find(message => message.role === 'tool')
+const trailing = toolWire[toolWire.length - 1]
+check("a tool result's image follows its string-only tool message as one user message",
+  typeof toolMessage?.content === 'string'
+  && toolMessage.content.includes('captured the window')
+  && toolWire.indexOf(toolMessage) === toolWire.length - 2
+  && trailing?.role === 'user'
+  && Array.isArray(trailing.content)
+  && String(trailing.content[0]?.text ?? '').includes('Attached image(s) from tool result')
+  && dataUrlIsPng(imageUrlIn(toolImageBody, 'user')),
+  toolMessage === undefined
+    ? 'no tool message was emitted'
+    : `roles=${toolWire.map(message => message.role).join(',')} tool=${JSON.stringify(toolMessage.content).slice(0, 28)}`)
+
 /**
  * Best-effort temp cleanup. Removing Windows junctions can abort the process
  * during teardown, so a failure here must never change the verdict.

@@ -1,6 +1,6 @@
 {
   "name": "dsh-charm-provider",
-  "version": "0.2.1",
+  "version": "0.2.4",
   "description": "Charm Hyper (hyper.charm.land) LLM provider plugin for DeepSeek Harness: live model catalog, image input, reasoning effort, and per-request cost readout.",
   "license": "BSD-3-Clause",
   "type": "module",
@@ -76,13 +76,27 @@
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": { "optional": true },
-    "@deepseek-ai/dsh-credentials": { "optional": true },
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "@deepseek-ai/dsh-settings": { "optional": true },
-    "@deepseek-ai/dsh-typert-protocol": { "optional": true },
-    "@deepseek-ai/schemastery": { "optional": true },
-    "react": { "optional": true }
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-credentials": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
